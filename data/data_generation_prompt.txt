@@ -1,0 +1,105 @@
+PACE - Data Generation Prompt (Phase 1)
+======================================
+
+Data strategy: synthetic data, generated with an LLM plus Python (as stated in
+the approved proposal, Section 5).
+
+LLM used:  Claude (Anthropic), November 2026
+Output:    src/generate_data.py  (the simulator the LLM wrote to this spec)
+           data/staffing_scenarios.csv  (100 staffing plans, the analysis dataset)
+           data/hourly_demand.csv       (952 simulated center-hours behind it)
+
+Why a generator instead of pasting a CSV from the chat:
+An LLM that types 100 rows of numbers by hand cannot keep cost, staffing hours
+and service levels arithmetically consistent with each other, and the result
+cannot be reproduced. So the prompt asks the LLM for a seeded Python simulator
+built to an explicit spec. Every number in the dataset can then be traced back
+to a stated assumption, and anyone can regenerate it with
+`python src/generate_data.py`.
+
+----------------------------------------------------------------------------
+EXACT PROMPT
+----------------------------------------------------------------------------
+
+I'm building PACE (Predictive Allocation for Club Excellence), a
+multi-objective staffing optimizer for one representative Life Time
+(NYSE: LTH) athletic country club. I need a synthetic dataset of 100 weekly
+staffing plans for Pareto frontier analysis. Write a seeded, reproducible
+Python script (numpy + pandas only) that simulates the club and scores each
+plan.
+
+DECISION VARIABLES (a full 10 x 10 grid = 100 plans)
+1. peak_coverage_pct: staffing in peak windows as a % of the demand-based
+   staffing target. Range 60 to 150 in steps of 10. Peak windows are weekday
+   5-9 AM and 4-8 PM, weekend 8 AM-12 PM.
+2. offpeak_coverage_pct: staffing in all other open hours as a % of the same
+   target. Range 40 to 130 in steps of 10.
+   Coverage applies to all three flexible labor groups: fitness-floor staff
+   (attendants and on-shift trainers), group fitness instructors (number of
+   classes offered), and childcare attendants.
+
+OBJECTIVES
+1. labor_cost_per_visit (MINIMIZE): weekly flexible labor cost (floor +
+   instructors + childcare, including payroll burden and overtime) divided by
+   completed member visits.
+2. member_experience_score (MAXIMIZE, 0-100): weighted composite of
+   - class fill-fit (35%): classes should be full but not overbooked. Score 1
+     when a class is 75-95% full, falling to 0 for near-empty rooms and to 0.9
+     for sold-out rooms, multiplied by the share of class demand that got a
+     spot.
+   - floor time-to-assistance (40%): model floor help requests as an M/M/c
+     (Erlang C) queue per hour, add walk time, and map 1 minute -> 100 and
+     10+ minutes -> 0.
+   - childcare availability (25%): share of children requesting care who are
+     admitted.
+   Weight every hour by the number of members who experienced it, so peaks
+   matter more than empty midday hours.
+
+DEMAND (randomness so no two weeks, and no two days, are the same)
+- Calibrate weekly check-ins to Life Time's Q1 2026 results: 837,903 center
+  memberships across 190 centers (about 4,410 per center), with an assumed 3.0
+  check-ins per membership per week.
+- Weekday hourly curve with a pre-work rush (~6:30 AM), a lunch bump and a
+  larger after-work rush (~5:30 PM). Weekends get one broad late-morning peak.
+  Sunday is quietest.
+- Add week-level, day-level and hour-level noise. Simulate 8 weeks and use
+  COMMON RANDOM NUMBERS: every plan is evaluated on the same 8 weeks, so
+  differences between plans come from the staffing decision, not from luck.
+
+HARD RULES (every generated plan must obey these)
+- Childcare ratio of 1 attendant per 6 children. Children beyond capacity are
+  turned away, never squeezed in. Two-adult minimum while the kids area is
+  open.
+- At least 2 floor staff on duty every open hour.
+- 3 studios at 35 members each (room capacity caps concurrent classes).
+- Overtime at 1.5x past each role's straight-time roster hours.
+- Staff are scheduled in half-hour blocks.
+
+REALISTIC PATTERNS I EXPECT
+- Under-staffing peaks should hurt experience badly (queues blow up, classes
+  sell out, childcare turns families away, and a turned-away parent often
+  skips the workout).
+- Over-staffing should cost more and help less. Too many classes leave rooms
+  half empty, so the class fill-fit score falls. That should create genuinely
+  dominated plans.
+- Off-peak staff should be cheap per hour but buy little experience, since few
+  members are in the building.
+
+OUTPUT
+- data/staffing_scenarios.csv with columns: plan_id, peak_coverage_pct,
+  offpeak_coverage_pct, labor_cost_per_visit, member_experience_score, plus
+  supporting columns (weekly_labor_cost, weekly_visits, staff hours by role,
+  classes_per_week, total_labor_hours, overtime_hours, the three component
+  scores, average and peak time-to-assistance, class fill rate, class waitlist,
+  childcare turnaways, and the week-to-week standard deviation of both
+  objectives).
+- data/hourly_demand.csv with the simulated hour-level demand.
+- Put every assumption in one PARAMS dictionary with comments, and add a
+  --check flag that regenerates the data and asserts it matches the saved CSV.
+
+----------------------------------------------------------------------------
+POST-GENERATION REVIEW
+----------------------------------------------------------------------------
+The generated script was run and its output was checked against the
+validation list in data/DATA_SOURCE.md (calibration to public figures, value
+ranges, hard-rule compliance, and the presence of a real tradeoff).
